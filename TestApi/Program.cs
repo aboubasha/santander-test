@@ -3,36 +3,26 @@ using TestApi;
 
 var builder = WebApplication.CreateBuilder(args);
 builder.Services.AddHttpClient();
+builder.Services.AddSingleton<HnCacheService>();
 var app = builder.Build();
 
 app.MapGet("/test", () => Results.Ok(new { result = "OK" }));
 
-app.MapGet("/hn/best", async (IHttpClientFactory httpFactory, CancellationToken ct) =>
+app.MapGet("/hn/best", async (HnCacheService hnCache, HttpRequest req) =>
 {
-    var client = httpFactory.CreateClient();
-    client.BaseAddress = new Uri("https://hacker-news.firebaseio.com/");
+    // optional query param ?n=10 to return top N items (cache is already sorted)
+    int? n = null;
+    if (int.TryParse(req.Query["n"].FirstOrDefault(), out var parsed) && parsed > 0)
+        n = parsed;
 
-    var ids = await client.GetFromJsonAsync<int[]>("v0/beststories.json", cancellationToken: ct);
-    if (ids == null || ids.Length == 0)
+    // Start cache fetch that should continue caching even if the client disconnects
+    var result = await hnCache.GetStories();
+    if (n.HasValue)
     {
-        return Results.Ok(Array.Empty<object>());
+        var take = Math.Min(n.Value, result.Length);
+        result = result.Take(take).ToArray();
     }
 
-    var tasks = ids.Select(async id =>
-    {
-        try
-        {
-            var item = await client.GetFromJsonAsync<HnItem>($"v0/item/{id}.json", ct);
-            return (object?)item;
-        }
-        catch
-        {
-            return null;
-        }
-    });
-
-    var stories = await Task.WhenAll(tasks);
-    var result = stories.Where(s => s != null).ToArray()!;
     return Results.Ok(result);
 });
 
